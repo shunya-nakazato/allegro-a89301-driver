@@ -1,0 +1,50 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build
+.next/
+out/
+dist/
+build/
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test
+coverage/
+.coverage
+.pytest_cache/
+# Test code uses the *.spec.py suffix and is intentionally not committed
+*.spec.py
+
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+*.egg-info/
+.venv/
+
+# Claude Code
+.claude
+CLAUDE.md
