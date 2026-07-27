@@ -9,3 +9,10 @@ WORD_MASK: int = (1 << REGISTER_DATA_BITS) - 1  # 0xFFFF
 READ_LENGTH: int = REGISTER_DATA_BITS // 8  # bytes returned by a register read (2)
 
 MAX_REGISTER_ADDRESS: int = 0xFF  # register addresses are a single byte (0..255)
+
+REGISTER_EEPROM_OFFSET: int = 64  # register address = EEPROM address + 64
+
+# Post-command settle times for EEPROM programming (datasheet: 15 ms HV erase
+# pulse, ~10 ms per-word write; both held at 15 ms to stay on the safe side).
+EEPROM_ERASE_DELAY_S: float = 0.015
+EEPROM_WRITE_DELAY_S: float = 0.015

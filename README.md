@@ -32,7 +32,7 @@ The A89301 I2C protocol has a simple structure — "7-bit slave address + 8-bit 
 1. **Command generation (encoding)** — build the byte sequence (I2C frame) for register writes and reads
 2. **Response parsing** — convert the 2 read bytes into physical quantities (Hz, V, °C, etc.)
 3. **Physical value ⇄ register value conversion** — handle the datasheet conversion formulas (e.g. `Rated Speed (Hz) = value × 0.530`) in a type-safe way
-4. **Read-modify-write safety** — writing one field of a multi-field register preserves the other fields (via the required `base_word`)
+4. **Read-modify-write safety** — writing one field of a multi-field register preserves the other fields (the driver reads the current word and replaces only the field's bits; an opt-in cache can spare the bus)
 
 ---
 
@@ -116,8 +116,10 @@ The EEPROM is rewritten one word at a time via "Erase → Write". Each operation
 
 Python 3.12+ library, managed with [uv](https://docs.astral.sh/uv/).
 
+Not yet published to PyPI — install from a checkout of this repository:
+
 ```bash
-pip install allegro-a89301   # depends on smbus2 for I2C access (Linux/Raspberry Pi)
+pip install .   # depends on smbus2 for I2C access (Linux/Raspberry Pi)
 ```
 
 For local development:
@@ -127,24 +129,22 @@ uv sync          # environment + dependencies
 uv run pytest    # run the test suite (no hardware needed; smbus2 is patched)
 ```
 
-`I2CDriver` owns the I2C connection (smbus2). `smbus2` is a required dependency.
+`A89301Driver` owns the I2C connection (smbus2). `smbus2` is a required dependency.
 
 ## Usage
 
-`I2CDriver` reads a field **by name** and returns a `Reading(name, value)`, where
-`value` is the physical value (or the raw integer for fields without a
-context-free conversion), coerced to the field's declared type.
+`A89301Driver` reads a field **by name** and returns its physical value (or the
+raw integer for fields without a context-free conversion), coerced to the
+field's declared type.
 
 ```python
-from allegro_a89301 import I2CDriver
+from allegro_a89301 import A89301Driver
 
-driver = I2CDriver(bus=1)  # opens /dev/i2c-1 and holds it
+driver = A89301Driver(bus=1)  # opens /dev/i2c-1 and holds it
 
-temp = driver.read("TEMPERATURE")  # Reading(name="TEMPERATURE", value=22.0)
-speed = driver.read("MOTOR_SPEED")  # Reading(name="MOTOR_SPEED", value=530.0)
-mode = driver.read("I2C_SPD_MODE")  # Reading(name="I2C_SPD_MODE", value=1)  # raw bit
-
-celsius = temp.value  # 22.0
+temp = driver.read("TEMPERATURE")  # 22.0 (degC)
+speed = driver.read("MOTOR_SPEED")  # 530.0 (Hz)
+mode = driver.read("I2C_SPD_MODE")  # 1 (raw bit)
 ```
 
 The driver creates and owns the I2C bus in its constructor (no dependency
@@ -155,22 +155,125 @@ The bus is held for the driver's lifetime; call `close()` or use it as a context
 manager to release the `/dev/i2c-N` handle:
 
 ```python
-with I2CDriver(bus=1) as driver:
+with A89301Driver(bus=1) as driver:
     temp = driver.read("TEMPERATURE")
 ```
 
+### Writing fields
+
+`write(name, value)` is **symmetric with `read`**: fields with a datasheet
+conversion take the physical value (rounded to the nearest raw step), unscaled
+fields take the raw int — so a value returned by `read` can be written back
+as-is. Writes are **read-modify-write**: the driver fetches the current 16-bit
+register word, replaces only the field's bits, and writes the merged word
+back, so sibling fields sharing the register are preserved. `write` returns
+the **effective value** actually written after rounding.
+
+```python
+with A89301Driver(bus=1) as driver:
+    driver.write("RATED_SPEED", 530.0)  # physical value (Hz) -> raw 1000
+    driver.write("I2C_SPD_MODE", 1)  # raw bit: speed demand from register 17[8:0]
+    actual = driver.write("I2C_SPD_DEMAND", 50.0)  # percent -> raw 256 -> 50.09...
+```
+
+Register writes are volatile: the device reloads its configuration from EEPROM
+at power-on.
+
+### Persisting to EEPROM
+
+`persist(name)` programs the **current word of `name`'s register** into the
+matching EEPROM address (register − 64) via the datasheet Erase → Write
+sequence, then returns control to idle:
+
+```python
+with A89301Driver(bus=1) as driver:
+    driver.write("DIRECTION", 1)
+    driver.persist("DIRECTION")  # survives power cycles
+```
+
+- The whole register word is persisted — the current volatile values of
+  *every* field sharing the register, not just `name` (field names sharing a
+  register are equivalent here: `persist("RATED_SPEED")` and
+  `persist("DIRECTION")` do the same thing).
+- The word is always **re-read from the device just before programming**, so
+  what burns is the device's actual state, never a cached one. Success is not
+  verified by reading the EEPROM back (a read-back check is future work).
+- `write` and a following `persist` are separate lock scopes: with multiple
+  threads, change and persist a register from the same thread, or another
+  thread's write may land in between and get burned.
+- The call blocks ~30 ms for the on-chip pulses. EEPROM endurance is limited:
+  persist only state that must survive power cycles — not per-cycle speed
+  demands.
+- If the sequence fails midway the EEPROM word may be left erased (reads as 0
+  after the next power-on) while the volatile register stays correct; recover
+  by retrying `persist(name)`. A failure to return control to idle is raised
+  too — the programming voltage may still be enabled, so it must not look
+  like success.
+
+### Optional register cache
+
+By default every write re-reads the register from the device just before
+merging, so RMW always builds on the device's actual state — safe even when
+the device browns out and reloads its EEPROM configuration mid-session
+(common around motors). The cost is one extra register read per write
+(~0.5 ms on a 100 kHz bus).
+
+For high-frequency writes (e.g. streaming `I2C_SPD_DEMAND` from a control
+loop) you can opt into a per-register word cache:
+
+```python
+driver = A89301Driver(bus=1, use_cache=True)
+```
+
+The opt-in comes with a contract:
+
+- The cache assumes this driver is the device's **only writer** and the
+  device never resets. Repeated writes to a register skip the bus read;
+  `read()` also refreshes the cache.
+- After a device reset / power glitch or writes by another I2C master, call
+  `invalidate_cache()` (optionally with a field name, e.g.
+  `invalidate_cache("DIRECTION")`) so the next write re-reads the device.
+  Without `use_cache=True` it is a harmless no-op.
+- If sending a write frame raises, the register's cached word is dropped
+  (logged as a warning) — the device may or may not have applied the frame,
+  so the next write re-reads instead of merging into a stale word.
+
+`persist` always re-reads the device regardless of this setting.
+
+### Errors
+
+All errors derive from `A89301Error` and double as the builtin they replaced:
+
+- `UnknownFieldError` (also `KeyError`) — name not in the register table
+- `NotWritableError` (also `ValueError`) — readback registers (120–127), the
+  factory-controlled register 83 (EEPROM 19), and EEPROM control registers
+  (161–163, driven only internally by `persist(name)`)
+- `ValueRangeError` (also `ValueError`) — value doesn't fit the field,
+  including a non-int value for a raw field
+
+No frame is sent on rejection. Plain `A89301Error` is raised when the driver
+is used after `close()`.
+
+`A89301Driver` instances are thread-safe: a lock serializes bus and cache access
+(`persist` holds it for ~30 ms), and `close()` is idempotent and safe against
+concurrent operations. Frames are logged at DEBUG level via the
+`allegro_a89301.driver` logger; a cache drop after a failed write is logged
+as a warning.
+
 ### Structure
-- `constants` — I2C protocol constants (slave address, register width)
-- `field` — the `Field` bit-field type and `Reading`; decodes a raw word into a typed value
-- `table` — field definitions (addresses, bit fields) and context-free conversions
-- `driver` — `I2CDriver`, which owns the I2C connection and reads fields by name
+- `constants` — I2C protocol constants (slave address, register width, EEPROM timings)
+- `errors` — the `A89301Error` exception hierarchy
+- `field` — the `Field` bit-field type; decode/encode between raw words and typed values
+- `registers` — field definitions (addresses, bit fields), conversions, and register access classification
+- `driver` — `A89301Driver`, which owns the I2C connection and reads/writes fields by name
 
-Public API: `I2CDriver`, `Reading`, `SLAVE_ADDRESS`.
+Public API: `A89301Driver`, `SLAVE_ADDRESS`, and the `errors` classes.
 
-Current scope is **synchronous `read(name)`**. Writes, EEPROM programming, and the
-context-dependent / non-linear conversions (`MOTOR_RESISTANCE`, current &
-acceleration scaling, `SPEED_RESPONSE_TC_AND_CLOCK_SPEED_RATIO`, `OPERATION_STATE`,
-`MOSFET_CISS_COMP`) are not implemented yet; those fields read as raw.
+Current scope is **synchronous `read(name)` / `write(name, value)` / `persist(name)`**.
+The context-dependent / non-linear read conversions (`MOTOR_RESISTANCE`,
+current & acceleration scaling, `SPEED_RESPONSE_TC_AND_CLOCK_SPEED_RATIO`,
+`OPERATION_STATE`, `MOSFET_CISS_COMP`) are not implemented yet; those fields
+read and write as raw.
 
 ---
 
