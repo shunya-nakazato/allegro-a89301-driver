@@ -31,8 +31,8 @@ The A89301 I2C protocol has a simple structure — "7-bit slave address + 8-bit 
 
 1. **Command generation (encoding)** — build the byte sequence (I2C frame) for register writes and reads
 2. **Response parsing** — convert the 2 read bytes into physical quantities (Hz, V, °C, etc.)
-3. **Physical value ⇄ register value conversion** — handle the datasheet conversion formulas (e.g. `Rated Speed (Hz) = value × 0.530`) in a type-safe way
-4. **Read-modify-write safety** — writing one field of a multi-field register preserves the other fields (the driver reads the current word and replaces only the field's bits; an opt-in cache can spare the bus)
+3. **Physical value ⇄ raw value conversion** — handle the datasheet conversion formulas (e.g. `Rated Speed (Hz) = value × 0.530`) in a type-safe way
+4. **Read-modify-write safety** — writing one field of a multi-field register preserves the other fields (the driver reads the current register bits and replaces only the field's bits; an opt-in cache can spare the bus)
 
 ---
 
@@ -165,7 +165,7 @@ with A89301Driver(bus=1) as driver:
 conversion take the physical value (rounded to the nearest raw step), unscaled
 fields take the raw int — so a value returned by `read` can be written back
 as-is. Writes are **read-modify-write**: the driver fetches the current 16-bit
-register word, replaces only the field's bits, and writes the merged word
+register bits, replaces only the field's bits, and writes the merged bits
 back, so sibling fields sharing the register are preserved. `write` returns
 the **effective value** actually written after rounding.
 
@@ -181,7 +181,7 @@ at power-on.
 
 ### Persisting to EEPROM
 
-`persist(name)` programs the **current word of `name`'s register** into the
+`persist(name)` programs the **current value of `name`'s register** into the
 matching EEPROM address (register − 64) via the datasheet Erase → Write
 sequence, then returns control to idle:
 
@@ -191,11 +191,11 @@ with A89301Driver(bus=1) as driver:
     driver.persist("DIRECTION")  # survives power cycles
 ```
 
-- The whole register word is persisted — the current volatile values of
+- All 16 register bits are persisted — the current volatile values of
   *every* field sharing the register, not just `name` (field names sharing a
   register are equivalent here: `persist("RATED_SPEED")` and
   `persist("DIRECTION")` do the same thing).
-- The word is always **re-read from the device just before programming**, so
+- The register bits are always **re-read from the device just before programming**, so
   what burns is the device's actual state, never a cached one. Success is not
   verified by reading the EEPROM back (a read-back check is future work).
 - `write` and a following `persist` are separate lock scopes: with multiple
@@ -219,7 +219,7 @@ the device browns out and reloads its EEPROM configuration mid-session
 (~0.5 ms on a 100 kHz bus).
 
 For high-frequency writes (e.g. streaming `I2C_SPD_DEMAND` from a control
-loop) you can opt into a per-register word cache:
+loop) you can opt into a per-register cache of the register bits:
 
 ```python
 driver = A89301Driver(bus=1, use_cache=True)
@@ -234,9 +234,9 @@ The opt-in comes with a contract:
   `invalidate_cache()` (optionally with a field name, e.g.
   `invalidate_cache("DIRECTION")`) so the next write re-reads the device.
   Without `use_cache=True` it is a harmless no-op.
-- If sending a write frame raises, the register's cached word is dropped
+- If sending a write frame raises, the register's cached value is dropped
   (logged as a warning) — the device may or may not have applied the frame,
-  so the next write re-reads instead of merging into a stale word.
+  so the next write re-reads instead of merging into a stale value.
 
 `persist` always re-reads the device regardless of this setting.
 
@@ -263,7 +263,7 @@ as a warning.
 ### Structure
 - `constants` — I2C protocol constants (slave address, register width, EEPROM timings)
 - `errors` — the `A89301Error` exception hierarchy
-- `field` — the `Field` bit-field type; decode/encode between raw words and typed values
+- `field` — the `Field` bit-field type; decode/encode between register bits and typed physical values
 - `registers` — field definitions (addresses, bit fields), conversions, and register access classification
 - `driver` — `A89301Driver`, which owns the I2C connection and reads/writes fields by name
 

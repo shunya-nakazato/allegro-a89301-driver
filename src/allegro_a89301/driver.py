@@ -24,9 +24,9 @@ __all__ = ["A89301Driver"]
 logger = logging.getLogger(__name__)
 
 
-def _encode_write_frame(register: int, word: int) -> list[int]:
+def _encode_write_frame(register: int, register_bits: int) -> list[int]:
     """Datasheet write frame after the slave address: [register, D[15:8], D[7:0]]."""
-    return [register, (word >> 8) & 0xFF, word & 0xFF]
+    return [register, (register_bits >> 8) & 0xFF, register_bits & 0xFF]
 
 
 # EEPROM programming plumbing, resolved once so a table rename fails at import.
@@ -44,10 +44,10 @@ class A89301Driver:
     """Reads and writes A89301 fields by name over a real I2C bus (smbus2).
 
     Owns the bus for its lifetime (close via :meth:`close` or context manager).
-    Writes are read-modify-write against the word read from the device just
-    before each write. With ``use_cache=True`` that read is skipped when a
-    cached word exists — an opt-in for high-frequency writes which assumes
-    this driver is the device's only writer and the device never resets
+    Writes are read-modify-write against the register bits read from the
+    device just before each write. With ``use_cache=True`` that read is skipped
+    when cached register bits exist — an opt-in for high-frequency writes
+    which assumes this driver is the device's only writer and the device never resets
     (see :meth:`invalidate_cache`). Instances are thread-safe: a lock
     serializes bus and cache access.
     """
@@ -78,18 +78,18 @@ class A89301Driver:
         """Read field ``name`` and return its physical value (raw when unscaled).
 
         Always hits the bus (readback values change on the device); with
-        ``use_cache=True`` the fetched word also refreshes the cache used by
-        :meth:`write`. Raises UnknownFieldError for an unknown name.
+        ``use_cache=True`` the fetched register bits also refresh the cache
+        used by :meth:`write`. Raises UnknownFieldError for an unknown name.
         """
         field = self._get_field(name)
         with self._lock:
-            word = self._read_word(field.register)
+            register_bits = self._read_register(field.register)
             if self._use_cache:
-                self._cache[field.register] = word
-        return field.decode(word)
+                self._cache[field.register] = register_bits
+        return field.decode(register_bits)
 
-    def write(self, name: str, value: int | float) -> int | float:
-        """Write ``value`` to the volatile register of field ``name`` (RMW).
+    def write(self, name: str, physical_value: int | float) -> int | float:
+        """Write ``physical_value`` to the volatile register of field ``name`` (RMW).
 
         Symmetric with :meth:`read`: fields with a conversion take the physical
         value (rounded to the nearest raw step), unscaled fields take the raw
@@ -100,21 +100,21 @@ class A89301Driver:
 
         Raises UnknownFieldError for an unknown field, NotWritableError for a
         read-only / factory-controlled / EEPROM-control register, and
-        ValueRangeError when ``value`` does not fit the field.
+        ValueRangeError when ``physical_value`` does not fit the field.
         """
         field = self._get_writable_field(name)
-        raw = field.encode(value)
+        raw_value = field.encode(physical_value)
         with self._lock:
             current = self._cache.get(field.register) if self._use_cache else None
             if current is None:
-                current = self._read_word(field.register)
-            merged = field.insert(current, raw)
+                current = self._read_register(field.register)
+            merged = field.insert(current, raw_value)
             try:
-                self._send_word(field.register, merged)
+                self._write_register(field.register, merged)
             except Exception:
                 # The frame may or may not have reached the device; drop the
-                # cached word so the next write re-reads instead of doing RMW
-                # on a stale value.
+                # cached register bits so the next write re-reads instead of
+                # doing RMW on a stale value.
                 if self._use_cache:
                     logger.warning("write to register %d failed; cache dropped", field.register)
                     self._cache.pop(field.register, None)
@@ -124,14 +124,15 @@ class A89301Driver:
         return field.decode(merged)
 
     def persist(self, name: str) -> None:
-        """Program the current word of ``name``'s register into EEPROM.
+        """Program the current value of ``name``'s register into EEPROM.
 
-        Persists the whole register word — the current volatile values of every
-        field sharing the register, not just ``name`` (field names sharing a
-        register are equivalent here) — via the datasheet Erase -> Write
-        sequence (blocks ~30 ms). The word is always re-read from the device
-        just before programming, so what burns is the device's actual state,
-        never a cached one. Success is not verified by reading the EEPROM back.
+        Persists all 16 register bits — the current volatile values of
+        every field sharing the register, not just ``name`` (field names
+        sharing a register are equivalent here) — via the datasheet Erase ->
+        Write sequence (blocks ~30 ms). The register bits are always re-read
+        from the device just before programming, so what burns is the device's
+        actual state, never a cached one. Success is not verified by reading
+        the EEPROM back.
 
         A ``write`` and a following ``persist`` are two separate lock scopes:
         with multiple threads, change and persist a register from the same
@@ -145,13 +146,13 @@ class A89301Driver:
         """
         field = self._get_writable_field(name)
         with self._lock:
-            word = self._read_word(field.register)
+            register_bits = self._read_register(field.register)
             if self._use_cache:
-                self._cache[field.register] = word
-            self._program_eeprom(field.register - REGISTER_EEPROM_OFFSET, word)
+                self._cache[field.register] = register_bits
+            self._program_eeprom(field.register - REGISTER_EEPROM_OFFSET, register_bits)
 
     def invalidate_cache(self, name: str | None = None) -> None:
-        """Drop cached words (all, or field ``name``'s register) to force re-reads.
+        """Drop cached register bits (all, or field ``name``'s) to force re-reads.
 
         Only meaningful with ``use_cache=True``, where it is required after
         registers change behind the driver's back: a device reset
@@ -173,14 +174,14 @@ class A89301Driver:
             raise A89301Error("driver is closed")
         return self._bus
 
-    def _send_word(self, register: int, word: int) -> None:
+    def _write_register(self, register: int, register_bits: int) -> None:
         """Send one write-command frame."""
-        frame = _encode_write_frame(register, word)
+        frame = _encode_write_frame(register, register_bits)
         logger.debug("write frame: %s", frame)
         self._require_bus().i2c_rdwr(i2c_msg.write(SLAVE_ADDRESS, frame))
 
-    def _program_eeprom(self, address: int, word: int) -> None:
-        """Persist ``word`` at EEPROM ``address``: Erase -> Write (datasheet).
+    def _program_eeprom(self, address: int, register_bits: int) -> None:
+        """Persist ``register_bits`` at EEPROM ``address``: Erase -> Write (datasheet).
 
         Each phase sets address (162) and data (163), triggers via control
         (161), then waits for the on-chip pulse to finish. Control is returned
@@ -192,20 +193,20 @@ class A89301Driver:
         try:
             for control, data, delay in (
                 (_ERASE_CONTROL, 0, EEPROM_ERASE_DELAY_S),
-                (_WRITE_CONTROL, word, EEPROM_WRITE_DELAY_S),
+                (_WRITE_CONTROL, register_bits, EEPROM_WRITE_DELAY_S),
             ):
-                self._send_word(_EEPROM_ADDRESS_REGISTER, address)
-                self._send_word(_EEPROM_DATA_IN_REGISTER, data)
-                self._send_word(_EEPROM_CTRL_REGISTER, control)
+                self._write_register(_EEPROM_ADDRESS_REGISTER, address)
+                self._write_register(_EEPROM_DATA_IN_REGISTER, data)
+                self._write_register(_EEPROM_CTRL_REGISTER, control)
                 time.sleep(delay)
         except Exception:
             try:
-                self._send_word(_EEPROM_CTRL_REGISTER, _CONTROL_IDLE)
+                self._write_register(_EEPROM_CTRL_REGISTER, _CONTROL_IDLE)
             except Exception:
                 logger.warning("failed to return EEPROM control to idle", exc_info=True)
             raise
         else:
-            self._send_word(_EEPROM_CTRL_REGISTER, _CONTROL_IDLE)
+            self._write_register(_EEPROM_CTRL_REGISTER, _CONTROL_IDLE)
 
     def _get_field(self, name: str) -> Field:
         try:
@@ -219,14 +220,14 @@ class A89301Driver:
             raise NotWritableError(f"{name!r} (register {field.register}) is not writable")
         return field
 
-    def _read_word(self, register: int) -> int:
-        """Read a 16-bit word via two STOP-separated transactions (datasheet)."""
+    def _read_register(self, register: int) -> int:
+        """Read a register's 16 bits via two STOP-separated transactions (datasheet)."""
         bus = self._require_bus()
         write_msg = i2c_msg.write(SLAVE_ADDRESS, [register])
         read_msg = i2c_msg.read(SLAVE_ADDRESS, READ_LENGTH)
         bus.i2c_rdwr(write_msg)  # transaction 1, then STOP
         bus.i2c_rdwr(read_msg)  # transaction 2
         high, low = list(read_msg)
-        word = (high << 8) | low
-        logger.debug("read register %d: 0x%04X", register, word)
-        return word
+        register_bits = (high << 8) | low
+        logger.debug("read register %d: 0x%04X", register, register_bits)
+        return register_bits

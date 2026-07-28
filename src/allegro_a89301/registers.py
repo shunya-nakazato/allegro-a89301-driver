@@ -1,25 +1,26 @@
 """A89301 register table (datasheet Table 1/2).
 
-The ``Field`` type lives in ``field.py``; this module holds the register data
-and the register-level access classification. Each field carries its physical
-conversion and inverse (``None`` = raw) and its read ``value_type`` (``int`` for
-raw enums/bitfields, ``float`` for scaled values).
+The ``Field`` type lives in ``field.py``; this module holds the register definitions
+and the register-level access classification. Each field carries its
+``raw_to_physical`` / ``physical_to_raw`` conversions (``None`` = the field is
+used raw) and its read ``physical_type`` (``int`` for raw enums/bitfields,
+``float`` for scaled values).
 """
 
 from __future__ import annotations
 
 from allegro_a89301.field import Field
 
-# Conversions raw -> physical and their inverses (see datasheet Table 2).
-# Writable fields carry both so read and write speak physical units; inverses
-# are rounded to the nearest raw step by Field.encode.
-_HZ = lambda raw: raw * 0.530
+# Conversions raw_value -> physical_value and their inverses (see datasheet
+# Table 2). Writable fields carry both so read and write speak physical units;
+# inverse results are rounded to the nearest raw step by Field.encode.
+_HZ = lambda raw_value: raw_value * 0.530
 _HZ_INV = lambda hz: hz / 0.530
-_V = lambda raw: raw / 5
+_V = lambda raw_value: raw_value / 5
 _V_INV = lambda v: v * 5
-_PCT = lambda raw: raw * 100 / 511  # 0..511 represents 0..100%
+_PCT = lambda raw_value: raw_value * 100 / 511  # 0..511 represents 0..100%
 _PCT_INV = lambda pct: pct * 511 / 100
-_DEADTIME = lambda raw: (raw + 1) * 40  # ns (reads as int)
+_DEADTIME = lambda raw_value: (raw_value + 1) * 40  # ns (reads as int)
 _DEADTIME_INV = lambda ns: ns / 40 - 1
 
 # name -> Field; names follow the datasheet, which is also the source of the
@@ -62,7 +63,7 @@ REGISTERS: dict[str, Field] = {
     "ANGLE_ERROR_LOCK": Field(79, 3, 2),  # Lock detect during startup
     "SOFT_OFF": Field(79, 6, 6),  # See functional description
     "SOFT_ON": Field(79, 7, 7),  # See functional description
-    # DEADTIME_SETTING: (n+1)*40 ns — has a conversion but reads as int.
+    # DEADTIME_SETTING: (n+1)*40 ns — scaled by raw_to_physical but reads as int.
     "DEADTIME_SETTING": Field(79, 11, 8, _DEADTIME, int, _DEADTIME_INV),
     "SAFE_BRAKE_THRD": Field(79, 15, 14),  # 00:1x 01:2x 10:4x 11:8x I
     # Register 80 (EEPROM 16)
@@ -78,7 +79,7 @@ REGISTERS: dict[str, Field] = {
     "I2C_SPD_MODE": Field(81, 9, 9),  # 0: SPD pin, 1: register 81[8:0]
     # Register 82 (EEPROM 18)
     "IPD_CURRENT_THR": Field(
-        82, 13, 8, lambda raw: raw * 0.086, float, lambda a: a / 0.086
+        82, 13, 8, lambda raw_value: raw_value * 0.086, float, lambda amps: amps / 0.086
     ),  # IPD thr (A)
     "DRIVE_GATE_SLEW": Field(82, 15, 14),  # Gate slew selector
     # Register 83 (EEPROM 19) -- factory controlled
@@ -86,11 +87,11 @@ REGISTERS: dict[str, Field] = {
     # Register 84 (EEPROM 20)
     "RATED_VOLTAGE": Field(84, 7, 0, _V, float, _V_INV),  # Rated Voltage (V)
     "SENSE_RESISTOR": Field(
-        84, 15, 8, lambda raw: raw / 3.7, float, lambda mohm: mohm * 3.7
+        84, 15, 8, lambda raw_value: raw_value / 3.7, float, lambda mohm: mohm * 3.7
     ),  # Sense R (mOhm)
     # Register 85 (EEPROM 21)
     "SLIGHT_MV_DEMAND": Field(
-        85, 7, 5, lambda raw: raw * 3.2 + 2.4, float, lambda pct: (pct - 2.4) / 3.2
+        85, 7, 5, lambda raw_value: raw_value * 3.2 + 2.4, float, lambda pct: (pct - 2.4) / 3.2
     ),  # Amplitude (%)
     "SPEED_INPUT_OFF_THRESHOLD": Field(85, 9, 8),  # 00:10 01:6 10:15 11:20 %
     "STANDBY_DIS": Field(85, 15, 15),  # 0: standby enabled, 1: disabled
@@ -108,7 +109,7 @@ REGISTERS: dict[str, Field] = {
     "BUS_CURRENT": Field(121, 15, 0),  # Bus current (mA) via sense R
     "Q_AXIS_CURRENT": Field(122, 15, 0),  # Q-axis current (mA) via sense R
     "VBB": Field(123, 15, 0, _V, float),  # VBB (V)
-    "TEMPERATURE": Field(124, 15, 0, lambda raw: raw - 53.0, float),  # Temperature (degC)
+    "TEMPERATURE": Field(124, 15, 0, lambda raw_value: raw_value - 53.0, float),  # Temp (degC)
     "CONTROL_DEMAND": Field(125, 8, 0, _PCT, float),  # 0..511 = 0..100%
     "CONTROL_COMMAND": Field(126, 8, 0, _PCT, float),  # 0..511 = 0..100%
     "OPERATION_STATE": Field(127, 15, 12),  # Operation state
