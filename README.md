@@ -240,6 +240,24 @@ The opt-in comes with a contract:
 
 `persist` always re-reads the device regardless of this setting.
 
+### Asyncio
+
+`AsyncA89301Driver` is the async counterpart of `A89301Driver` with the same
+contract (arguments, return values, errors). Every blocking call — bus I/O and
+`persist`'s ~30 ms EEPROM waits — runs in a worker thread via
+`asyncio.to_thread`, so the event loop is never blocked:
+
+```python
+from allegro_a89301 import AsyncA89301Driver
+
+async with AsyncA89301Driver(bus=1) as driver:
+    temp = await driver.read("TEMPERATURE")
+    await driver.write("I2C_SPD_DEMAND", 50.0)
+```
+
+Concurrent awaits are safe: the wrapped driver's lock serializes bus and cache
+access. The constructor opens the bus synchronously (a quick device-file open).
+
 ### Errors
 
 All errors derive from `A89301Error` and double as the builtin they replaced:
@@ -266,10 +284,12 @@ as a warning.
 - `field` — the `Field` bit-field type; decode/encode between register bits and typed physical values
 - `registers` — field definitions (addresses, bit fields), conversions, and register access classification
 - `driver` — `A89301Driver`, which owns the I2C connection and reads/writes fields by name
+- `async_driver` — `AsyncA89301Driver`, the asyncio facade over the synchronous driver
 
-Public API: `A89301Driver`, `SLAVE_ADDRESS`, and the `errors` classes.
+Public API: `A89301Driver`, `AsyncA89301Driver`, `SLAVE_ADDRESS`, and the `errors` classes.
 
-Current scope is **synchronous `read(name)` / `write(name, value)` / `persist(name)`**.
+Current scope is **`read(name)` / `write(name, value)` / `persist(name)`**
+(synchronous, plus the async facade).
 The context-dependent / non-linear read conversions (`MOTOR_RESISTANCE`,
 current & acceleration scaling, `SPEED_RESPONSE_TC_AND_CLOCK_SPEED_RATIO`,
 `OPERATION_STATE`, `MOSFET_CISS_COMP`) are not implemented yet; those fields
