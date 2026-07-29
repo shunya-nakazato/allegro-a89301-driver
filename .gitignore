@@ -4,47 +4,36 @@ Thumbs.db
 
 # Editor
 .vscode/
-!.vscode/settings.json
-!.vscode/extensions.json
 .idea/
 *.swp
 *.swo
 
-# Dependencies
-node_modules/
-
-# Environment
+# Environment / secrets
 .env
-.env.local
-.env.*.local
-
-# Build
-.next/
-out/
-dist/
-build/
-
-# Docker
-docker-compose.override.yml
-
-# Logs
-*.log
-npm-debug.log*
-
-# Test
-coverage/
-.coverage
-.pytest_cache/
-# Test code uses the *.spec.py suffix and is intentionally not committed
-*.spec.py
+.env.*
 
 # Python
 __pycache__/
 *.py[cod]
-.ruff_cache/
-*.egg-info/
 .venv/
 
-# Claude Code
+# Build (uv build)
+dist/
+build/
+*.egg-info/
+
+# Lint / test caches
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Test code uses the *.spec.py suffix and is intentionally not committed
+*.spec.py
+
+# Logs
+*.log
+
+# Claude Code (local workflow files, not published)
 .claude
 CLAUDE.md
