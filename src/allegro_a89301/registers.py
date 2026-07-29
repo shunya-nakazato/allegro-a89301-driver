@@ -1,10 +1,7 @@
-"""A89301 register table (datasheet Table 1/2).
+"""A89301 register table (datasheet Table 1/2) and access classification.
 
-The ``Field`` type lives in ``field.py``; this module holds the register definitions
-and the register-level access classification. Each field carries its
-``raw_to_physical`` / ``physical_to_raw`` conversions (``None`` = the field is
-used raw) and its read ``physical_type`` (``int`` for raw enums/bitfields,
-``float`` for scaled values).
+Each field carries its raw<->physical conversions (``None`` = used raw) and
+its read ``physical_type``; the ``Field`` type itself lives in ``field.py``.
 """
 
 from __future__ import annotations

@@ -10,14 +10,11 @@ __all__ = ["AsyncA89301Driver"]
 
 
 class AsyncA89301Driver:
-    """Async counterpart of :class:`A89301Driver` for asyncio applications.
+    """Async counterpart of :class:`A89301Driver`; identical method contracts.
 
-    Every blocking call (I2C bus I/O and the ~30 ms EEPROM programming waits)
-    runs in a worker thread via ``asyncio.to_thread``, so the event loop is
-    never blocked. Method contracts — arguments, return values, exceptions —
-    are identical to the synchronous driver's. Concurrent awaits are safe:
-    the wrapped driver's lock serializes bus and cache access. The constructor
-    opens the bus synchronously (a quick device-file open).
+    Blocking calls (bus I/O, ~30 ms EEPROM waits) run via ``asyncio.to_thread``
+    so the event loop never blocks. Concurrent awaits are safe (the wrapped
+    driver's lock serializes access). The constructor opens the bus synchronously.
     """
 
     def __init__(self, bus: int = 1, *, use_cache: bool = False) -> None:

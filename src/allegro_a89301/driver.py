@@ -43,13 +43,10 @@ _CONTROL_IDLE = 0
 class A89301Driver:
     """Reads and writes A89301 fields by name over a real I2C bus (smbus2).
 
-    Owns the bus for its lifetime (close via :meth:`close` or context manager).
-    Writes are read-modify-write against the register bits read from the
-    device just before each write. With ``use_cache=True`` that read is skipped
-    when cached register bits exist — an opt-in for high-frequency writes
-    which assumes this driver is the device's only writer and the device never resets
-    (see :meth:`invalidate_cache`). Instances are thread-safe: a lock
-    serializes bus and cache access.
+    Thread-safe; owns the bus (close via :meth:`close` or context manager).
+    Writes are read-modify-write. ``use_cache=True`` skips the pre-write read
+    when cached register bits exist — safe only while this driver is the
+    device's sole writer and the device never resets (see :meth:`invalidate_cache`).
     """
 
     def __init__(self, bus: int = 1, *, use_cache: bool = False) -> None:
@@ -59,10 +56,7 @@ class A89301Driver:
         self._lock = threading.Lock()
 
     def close(self) -> None:
-        """Release the owned I2C bus (idempotent).
-
-        Any later read/write/persist raises A89301Error.
-        """
+        """Release the I2C bus (idempotent); any later access raises A89301Error."""
         with self._lock:
             if self._bus is not None:
                 self._bus.close()
@@ -77,9 +71,8 @@ class A89301Driver:
     def read(self, name: str) -> int | float:
         """Read field ``name`` and return its physical value (raw when unscaled).
 
-        Always hits the bus (readback values change on the device); with
-        ``use_cache=True`` the fetched register bits also refresh the cache
-        used by :meth:`write`. Raises UnknownFieldError for an unknown name.
+        Always hits the bus (and refreshes the write cache when enabled).
+        Raises UnknownFieldError for an unknown name.
         """
         field = self._get_field(name)
         with self._lock:
@@ -91,16 +84,10 @@ class A89301Driver:
     def write(self, name: str, physical_value: int | float) -> int | float:
         """Write ``physical_value`` to the volatile register of field ``name`` (RMW).
 
-        Symmetric with :meth:`read`: fields with a conversion take the physical
-        value (rounded to the nearest raw step), unscaled fields take the raw
-        int — so a value returned by ``read`` can be written back as-is.
-        Returns the effective value actually written after rounding. Sibling
-        fields sharing the register are preserved. The value is lost on power
-        cycle unless followed by :meth:`persist`.
-
-        Raises UnknownFieldError for an unknown field, NotWritableError for a
-        read-only / factory-controlled / EEPROM-control register, and
-        ValueRangeError when ``physical_value`` does not fit the field.
+        Takes the same units :meth:`read` returns (rounded to the nearest raw
+        step) and returns the effective value written. Sibling fields are
+        preserved; the value is lost on power cycle unless persisted. Raises
+        UnknownFieldError, NotWritableError, or ValueRangeError.
         """
         field = self._get_writable_field(name)
         raw_value = field.encode(physical_value)
@@ -124,25 +111,14 @@ class A89301Driver:
         return field.decode(merged)
 
     def persist(self, name: str) -> None:
-        """Program the current value of ``name``'s register into EEPROM.
+        """Program field ``name``'s register into EEPROM (Erase -> Write, ~30 ms).
 
-        Persists all 16 register bits — the current volatile values of
-        every field sharing the register, not just ``name`` (field names
-        sharing a register are equivalent here) — via the datasheet Erase ->
-        Write sequence (blocks ~30 ms). The register bits are always re-read
-        from the device just before programming, so what burns is the device's
-        actual state, never a cached one. Success is not verified by reading
-        the EEPROM back.
-
-        A ``write`` and a following ``persist`` are two separate lock scopes:
-        with multiple threads, change and persist a register from the same
-        thread. EEPROM endurance is limited; persist only state that must
-        survive power cycles. If the sequence fails midway the EEPROM word may
-        be left erased (reads as 0 after the next power-on) while the volatile
-        register stays correct — recover by retrying ``persist(name)``.
-
-        Raises UnknownFieldError for an unknown field and NotWritableError for
-        a read-only / factory-controlled / EEPROM-control register.
+        Burns all 16 bits — every field sharing the register — as re-read from
+        the device just before programming; success is not read back, and
+        EEPROM endurance is limited. A midway failure may leave the word
+        erased (reads 0 after next power-on) — retry to recover. Change and
+        persist a register from the same thread (separate lock scopes).
+        Raises UnknownFieldError or NotWritableError.
         """
         field = self._get_writable_field(name)
         with self._lock:
@@ -154,10 +130,8 @@ class A89301Driver:
     def invalidate_cache(self, name: str | None = None) -> None:
         """Drop cached register bits (all, or field ``name``'s) to force re-reads.
 
-        Only meaningful with ``use_cache=True``, where it is required after
-        registers change behind the driver's back: a device reset
-        (configuration reloads from EEPROM) or another master's writes.
-        Without the cache this is a harmless no-op.
+        Required after a device reset or another master's writes when
+        ``use_cache=True``; otherwise a harmless no-op.
         """
         if name is None:
             with self._lock:
@@ -183,12 +157,9 @@ class A89301Driver:
     def _program_eeprom(self, address: int, register_bits: int) -> None:
         """Persist ``register_bits`` at EEPROM ``address``: Erase -> Write (datasheet).
 
-        Each phase sets address (162) and data (163), triggers via control
-        (161), then waits for the on-chip pulse to finish. Control is returned
-        to idle afterwards; a failure to do so is raised (the programming
-        voltage may still be enabled) unless the sequence itself already
-        failed, in which case the original error wins and the idle failure is
-        only logged.
+        Control (161) is returned to idle even on failure (the programming
+        voltage may otherwise stay enabled); if that idle write fails after a
+        sequence error, the original error wins and the idle failure is logged.
         """
         try:
             for control, data, delay in (

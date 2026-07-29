@@ -1,13 +1,8 @@
 """The ``Field`` bit-field type used by the A89301 register table.
 
-Vocabulary used across the library:
-
-- ``register_bits``: the full 16-bit content of one register, with every
-  field packed in place.
-- ``raw_value``: one field's bits extracted as an unscaled integer, in
-  register units.
-- ``physical_value``: the converted quantity (Hz, V, %, ...); equal to the
-  raw_value for fields without a conversion.
+Vocabulary: ``register_bits`` = the full 16-bit register content;
+``raw_value`` = one field's bits as an unscaled int; ``physical_value`` =
+the converted quantity (Hz, V, %, ...; equals the raw_value when unscaled).
 """
 
 from __future__ import annotations
@@ -28,9 +23,8 @@ class Field:
     """A bit field [msb:lsb] within a 16-bit register.
 
     The field's name lives in the ``REGISTERS`` table key, not here.
-    ``raw_to_physical`` converts a raw_value to a physical_value and
-    ``physical_to_raw`` converts it back (``None`` = the field is used raw).
-    ``physical_type`` is the Python type a read yields (``int`` or ``float``).
+    ``raw_to_physical`` / ``physical_to_raw`` convert between raw and physical
+    (``None`` = used raw); ``physical_type`` is the Python type a read yields.
     """
 
     register: int
@@ -66,20 +60,15 @@ class Field:
         return (register_bits & self.mask) >> self.lsb
 
     def insert(self, register_bits: int, raw_value: int) -> int:
-        """Return ``register_bits`` with only this field's bits replaced by ``raw_value``.
-
-        Raises ValueRangeError for a non-int or out-of-range ``raw_value``.
-        """
+        """Replace only this field's bits; ValueRangeError for a bad ``raw_value``."""
         _check_register_bits(register_bits)
         raw_value = self._check_raw_value(raw_value)
         return (register_bits & ~self.mask) | (raw_value << self.lsb)
 
     def encode(self, physical_value: int | float) -> int:
-        """Convert a physical (or raw, when no ``physical_to_raw``) value to a raw_value.
+        """Physical (raw when unscaled) value -> raw_value, rounded to the nearest step.
 
-        The inverse conversion result is rounded to the nearest raw step.
-        Raises ValueRangeError for a non-int raw_value or when the result does
-        not fit the field width.
+        Raises ValueRangeError when the result does not fit the field.
         """
         if self.physical_to_raw is not None:
             raw_value = round(self.physical_to_raw(physical_value))
@@ -88,12 +77,10 @@ class Field:
         return self._check_raw_value(raw_value)
 
     def decode(self, register_bits: int) -> int | float:
-        """Decode 16-bit ``register_bits`` into this field's typed physical_value.
+        """Decode 16-bit ``register_bits`` into this field's physical_value.
 
-        Extracts this field's bits, applies ``raw_to_physical`` (raw when
-        absent), then coerces the result to ``physical_type`` so the returned
-        value's type is guaranteed regardless of the conversion's own
-        arithmetic.
+        The result is coerced to ``physical_type``, guaranteeing the return
+        type regardless of the conversion's own arithmetic.
         """
         raw_value = self.extract(register_bits)
         if self.raw_to_physical is not None:
