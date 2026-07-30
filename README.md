@@ -36,70 +36,44 @@ The A89301 I2C protocol has a simple structure — "7-bit slave address + 8-bit 
 
 ---
 
-## I2C Protocol (per Datasheet)
-
-### Slave address
-- 7-bit slave address: **`0x55`** (Device ID `1010101`)
-- Register data is a fixed **16 bits, MSB first**
-
-### Write command
-```
-START
-  → Peripheral Address (0x55, R/W=0)      ; ACK
-  → Register Address (8-bit)              ; ACK
-  → Data Byte 2 = D[15:8] (high byte)     ; ACK
-  → Data Byte 1 = D[7:0]  (low byte)      ; ACK
-STOP
-```
-
-### Read command (two steps)
-```
-START → Peripheral Address (0x55, R/W=0) ; ACK
-  → Register Address (8-bit)             ; ACK
-STOP
-START → Slave Address (0x55, R/W=1)      ; ACK
-  → Read Data Byte 2 = D[15:8]           ; ACK
-  → Read Data Byte 1 = D[7:0]            ; NACK
-STOP
-```
-
-### Register / EEPROM address relationship
-- The EEPROM holds 24 words × 16 bits. Users work with **addresses 8–22** (configuration).
-- **Register address = corresponding EEPROM address + 64**
-  Example: Rated Speed is at EEPROM `8`; its register address is `72`.
-- Writing over I2C to a register overwrites the live value (volatile, takes effect immediately); writing to EEPROM persists across power cycles.
-
----
-
 ## Key Registers (excerpt)
 
+Frame formats and the full register map are in the
+[datasheet](https://www.pololu.com/file/0J2192/A89301-Datasheet.pdf); this
+section only summarizes the fields the library exposes. Register address =
+EEPROM address + 64 (e.g. Rated Speed: EEPROM `8` → register `72`).
+
 ### Configuration registers (EEPROM 8–22 / registers 72–86)
-| Reg | Parameter | Conversion / meaning |
-|---|---|---|
-| 8 [10:0] | `RATED_SPEED` | Rated Speed (Hz) = value × 0.530 |
-| 8 [11] | `SPEED_CLOSE_LOOP` | 1: closed loop / 0: open loop |
-| 8 [14] | `DIRECTION` | 1: A→B→C / 0: A→C→B |
-| 9 [7:0] | `ACCELERATION` | Hz/s = value × k (range=0 → k=0.05, else 3.2) |
-| 10 [10:0] | `RATED_CURRENT` | mA = value / (Sense_resistor / 125) |
-| 11 [11:10] | `STARTUP_MODE` | 00: 6-pulse / 01: 2-pulse / 10: slight-move / 11: align & go |
-| 17 [8:0] | `I2C_SPD_DEMAND` | 0–511 → 0–100% |
-| 17 [9] | `I2C_SPD_MODE` | 0: controlled by SPD pin / 1: controlled by register 17[8:0] |
-| 20 [7:0] | `RATED_VOLTAGE` | V = value / 5 |
-| 20 [15:8] | `SENSE_RESISTOR` | mΩ = value / 3.7 |
+| Reg | Parameter | Conversion / meaning | Resolution (1 LSB) |
+|---|---|---|---|
+| 8 [10:0] | `RATED_SPEED` | Rated Speed (Hz) = value × 0.530 | 0.530 Hz |
+| 8 [11] | `SPEED_CLOSE_LOOP` | 1: closed loop / 0: open loop | — |
+| 8 [14] | `DIRECTION` | 1: A→B→C / 0: A→C→B | — |
+| 9 [7:0] | `ACCELERATION` | Hz/s = value × k (range=0 → k=0.05, else 3.2) | 3.2 Hz/s (0.05 Hz/s if range=0) |
+| 10 [10:0] | `RATED_CURRENT` | mA = value / (Sense_resistor / 125) | 125 / R_sense(mΩ) mA |
+| 11 [11:10] | `STARTUP_MODE` | 00: 6-pulse / 01: 2-pulse / 10: slight-move / 11: align & go | — |
+| 17 [8:0] | `I2C_SPD_DEMAND` | 0–511 → 0–100% | 100/511 ≈ 0.196% |
+| 17 [9] | `I2C_SPD_MODE` | 0: controlled by SPD pin / 1: controlled by register 17[8:0] | — |
+| 20 [7:0] | `RATED_VOLTAGE` | V = value / 5 | 0.2 V |
+| 20 [15:8] | `SENSE_RESISTOR` | mΩ = value / 3.7 | 1/3.7 ≈ 0.270 mΩ |
+
+`write()` accepts physical values for these fields and rounds to the nearest
+raw step, so the resolution above is also the write granularity (the effective
+value is returned by `write`).
 
 > Bits marked gray in the datasheet (Table 1) must be kept at their defaults. Writing to undocumented registers may cause malfunction or damage, so the library does not touch them.
 
 ### Readback registers
-| Reg | Content | Conversion |
-|---|---|---|
-| 120 | Motor speed | Hz = value × 0.530 |
-| 121 | Bus current | mA = value / (Sense_resistor / 125) |
-| 122 | Q-axis current | mA = value / (Sense_resistor / 125) |
-| 123 | VBB | V = value / 5 |
-| 124 | Temperature | °C = value − 53 |
-| 125 | Control demand | 0–511 → 0–100% |
-| 126 | Control command | 0–511 → 0–100% |
-| 127 [15:12] | Operation state | operating state |
+| Reg | Content | Conversion | Resolution (1 LSB) |
+|---|---|---|---|
+| 120 | Motor speed | Hz = value × 0.530 | 0.530 Hz |
+| 121 | Bus current | mA = value / (Sense_resistor / 125) | 125 / R_sense(mΩ) mA |
+| 122 | Q-axis current | mA = value / (Sense_resistor / 125) | 125 / R_sense(mΩ) mA |
+| 123 | VBB | V = value / 5 | 0.2 V |
+| 124 | Temperature | °C = value − 53 | 1 °C |
+| 125 | Control demand | 0–511 → 0–100% | 100/511 ≈ 0.196% |
+| 126 | Control command | 0–511 → 0–100% | 100/511 ≈ 0.196% |
+| 127 [15:12] | Operation state | operating state | — |
 
 ### EEPROM programming registers
 | Reg | Name | Purpose |
@@ -114,22 +88,46 @@ The EEPROM is rewritten one word at a time via "Erase → Write". Each operation
 
 ## Installation
 
-Python 3.12+ library, managed with [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12+. The only runtime dependency is
+[smbus2](https://pypi.org/project/smbus2/) for I2C access (Linux/Raspberry Pi).
 
-Not yet published to PyPI — install from a checkout of this repository:
+Not yet published to PyPI — install from this repository.
+
+### pip
 
 ```bash
-pip install .   # depends on smbus2 for I2C access (Linux/Raspberry Pi)
+pip install git+https://github.com/shunya-nakazato/allegro-a89301-driver.git
 ```
 
-For local development:
+Or from a local checkout (use a virtual environment as needed):
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install .
+```
+
+### uv
+
+```bash
+uv add git+https://github.com/shunya-nakazato/allegro-a89301-driver.git
+```
+
+### Development setup
+
+With [uv](https://docs.astral.sh/uv/) (recommended):
 
 ```bash
 uv sync          # environment + dependencies
 uv run pytest    # run the test suite (no hardware needed; smbus2 is patched)
 ```
 
-`A89301Driver` owns the I2C connection (smbus2). `smbus2` is a required dependency.
+With plain pip:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e . pytest
+pytest
+```
 
 ## Usage
 
