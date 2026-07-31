@@ -277,12 +277,18 @@ concurrent operations. Frames are logged at DEBUG level via the
 as a warning.
 
 ### Structure
-- `constants` — I2C protocol constants (slave address, register width, EEPROM timings)
-- `errors` — the `A89301Error` exception hierarchy
-- `field` — the `Field` bit-field type; decode/encode between register bits and typed physical values
-- `registers` — field definitions (addresses, bit fields), conversions, and register access classification
-- `driver` — `A89301Driver`, which owns the I2C connection and reads/writes fields by name
-- `async_driver` — `AsyncA89301Driver`, the asyncio facade over the synchronous driver
+
+```text
+src/allegro_a89301/
+├── __init__.py      # public API exports
+├── constants.py     # I2C protocol constants (slave address, register width, EEPROM timings)
+├── errors.py        # the A89301Error exception hierarchy
+├── field.py         # the Field bit-field type; decode/encode between register bits and typed physical values
+├── registers.py     # field definitions (addresses, bit fields), conversions, and register access classification
+├── driver.py        # A89301Driver — owns the I2C connection, reads/writes fields by name
+├── async_driver.py  # AsyncA89301Driver — the asyncio facade over the synchronous driver
+└── py.typed         # PEP 561 marker (the package ships inline type hints)
+```
 
 Public API: `A89301Driver`, `AsyncA89301Driver`, `SLAVE_ADDRESS`, and the `errors` classes.
 
