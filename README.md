@@ -112,6 +112,21 @@ pip install .
 uv add git+https://github.com/shunya-nakazato/allegro-a89301-driver.git
 ```
 
+### Wheel (offline install)
+
+For targets without GitHub access (e.g. an offline Raspberry Pi), build a
+wheel once and copy that single file to the target:
+
+```bash
+# On a machine with this repository checked out
+uv build   # produces dist/allegro_a89301-<version>-py3-none-any.whl
+```
+
+```bash
+# On the target
+pip install allegro_a89301-<version>-py3-none-any.whl
+```
+
 ### Development setup
 
 With [uv](https://docs.astral.sh/uv/) (recommended):
