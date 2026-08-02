@@ -43,7 +43,7 @@ Frame formats and the full register map are in the
 section only summarizes the fields the library exposes. Register address =
 EEPROM address + 64 (e.g. Rated Speed: EEPROM `8` → register `72`).
 
-### Configuration registers (EEPROM 8–22 / registers 72–86)
+### Configuration registers (read/write — EEPROM 8–22 / registers 72–86)
 | Reg | Parameter | Conversion / meaning | Resolution (1 LSB) |
 |---|---|---|---|
 | 8 [10:0] | `RATED_SPEED` | Rated Speed (Hz) = value × 0.530 | 0.530 Hz |
@@ -61,9 +61,9 @@ EEPROM address + 64 (e.g. Rated Speed: EEPROM `8` → register `72`).
 raw step, so the resolution above is also the write granularity (the effective
 value is returned by `write`).
 
-> Bits marked gray in the datasheet (Table 1) must be kept at their defaults. Writing to undocumented registers may cause malfunction or damage, so the library does not touch them.
+> Bits marked gray in the datasheet (Table 1) must be kept at their defaults. Writing to undocumented registers may cause malfunction or damage, so the library does not touch them. Register 83 (EEPROM 19) is factory-controlled, so `write()` rejects it with `NotWritableError`.
 
-### Readback registers
+### Readback registers (read-only — registers 120–127)
 | Reg | Content | Conversion | Resolution (1 LSB) |
 |---|---|---|---|
 | 120 | Motor speed | Hz = value × 0.530 | 0.530 Hz |
@@ -75,7 +75,7 @@ value is returned by `write`).
 | 126 | Control command | 0–511 → 0–100% | 100/511 ≈ 0.196% |
 | 127 [15:12] | Operation state | operating state | — |
 
-### EEPROM programming registers
+### EEPROM programming registers (driven by `persist()` — rejected by `write()`)
 | Reg | Name | Purpose |
 |---|---|---|
 | 161 | EEPROM Control | bit0 `EN` / bit1 `ER` (Erase) / bit2 `WR` (Write) / bit3 `RD` (Read) |
