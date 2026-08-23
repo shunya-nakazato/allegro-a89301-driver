@@ -21,6 +21,8 @@ An FOC (Field-Oriented Control) controller for 3-phase sensorless BLDC motors, b
 
 Speed can be commanded via analog, PWM, or CLOCK inputs, but this library targets **configuration and control over I2C**. Using I2C, the EEPROM defaults can be overwritten in the registers and parameters changed on the fly.
 
+> ⚠️ Motor selection: the #5356 board's 3 mΩ shunt is sized for its 11 A class rating, so a small motor cannot be driven no matter how it is configured. `MOTOR_RESISTANCE` tops out at 0.548 Ω with this shunt, and the datasheet wants 55–65 mV across SENN–SENP at rated current (a few amps at minimum). Below that, the position observer diverges and the controller throttles the drive to zero — `CONTROL_DEMAND` looks normal while `CONTROL_COMMAND` reads 0.0% and the motor stays silent. Open loop (`SPEED_CLOSE_LOOP = 0`) does not help: commutation still relies on the observer. Also keep `RATED_SPEED` below the ~1 kHz commutation ceiling, checking the motor's no-load speed at the supply voltage in use.
+
 > Note: Until the first I2C command is sent, the SPD pin acts as SCL and the FG pin as SDA. After the first I2C command, the FG pin becomes a dedicated data pin (SDA).
 
 ---
