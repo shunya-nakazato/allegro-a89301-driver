@@ -49,8 +49,9 @@ EEPROM address + 64 (e.g. Rated Speed: EEPROM `8` → register `72`).
 | 8 [10:0] | `RATED_SPEED` | Rated Speed (Hz) = value × 0.530 | 0.530 Hz |
 | 8 [11] | `SPEED_CLOSE_LOOP` | 1: closed loop / 0: open loop | — |
 | 8 [14] | `DIRECTION` | 1: A→B→C / 0: A→C→B | — |
-| 9 [7:0] | `ACCELERATION` | Hz/s = value × k (range=0 → k=0.05, else 3.2) | 3.2 Hz/s (0.05 Hz/s if range=0) |
-| 10 [10:0] | `RATED_CURRENT` | mA = value / (Sense_resistor / 125) | 125 / R_sense(mΩ) mA |
+| 9 [7:0] | `ACCELERATION` | Hz/s = value × k, k selected by `ACCELERATE_RANGE` (0 → 0.05, else 3.2) | k Hz/s |
+| 9 [15:8] | `MOTOR_RESISTANCE` | Ω = value × S_reg / 5120 (datasheet formula with the rated-voltage terms cancelled) | S_reg/5120 Ω |
+| 10 [10:0] | `RATED_CURRENT` | mA = value / (S_reg / 125) | 125/S_reg ≈ 33.8/R_sense(mΩ) mA |
 | 11 [11:10] | `STARTUP_MODE` | 00: 6-pulse / 01: 2-pulse / 10: slight-move / 11: align & go | — |
 | 17 [8:0] | `I2C_SPD_DEMAND` | 0–511 → 0–100% | 100/511 ≈ 0.196% |
 | 17 [9] | `I2C_SPD_MODE` | 0: controlled by SPD pin / 1: controlled by register 17[8:0] | — |
@@ -61,14 +62,23 @@ EEPROM address + 64 (e.g. Rated Speed: EEPROM `8` → register `72`).
 raw step, so the resolution above is also the write granularity (the effective
 value is returned by `write`).
 
+`S_reg` is the raw `SENSE_RESISTOR` register value (= 3.7 × R_sense(mΩ)).
+Fields whose conversion involves `S_reg` or `ACCELERATE_RANGE` cost one extra
+register read per `read()`/`write()`: the driver fetches the dependency first
+and converts with it (the two transactions are not atomic, but both
+dependencies are configuration values that do not change during operation).
+If `SENSE_RESISTOR` reads 0 (blank device), converting a current or resistance
+field raises `ValueRangeError` instead of dividing by zero — program the sense
+resistor value first.
+
 > Bits marked gray in the datasheet (Table 1) must be kept at their defaults. Writing to undocumented registers may cause malfunction or damage, so the library does not touch them. Register 83 (EEPROM 19) is factory-controlled, so `write()` rejects it with `NotWritableError`.
 
 ### Readback registers (read-only — registers 120–127)
 | Reg | Content | Conversion | Resolution (1 LSB) |
 |---|---|---|---|
 | 120 | Motor speed | Hz = value × 0.530 | 0.530 Hz |
-| 121 | Bus current | mA = value / (Sense_resistor / 125) | 125 / R_sense(mΩ) mA |
-| 122 | Q-axis current | mA = value / (Sense_resistor / 125) | 125 / R_sense(mΩ) mA |
+| 121 | Bus current | mA = value / (S_reg / 125) | 125/S_reg ≈ 33.8/R_sense(mΩ) mA |
+| 122 | Q-axis current | mA = value / (S_reg / 125) | 125/S_reg ≈ 33.8/R_sense(mΩ) mA |
 | 123 | VBB | V = value / 5 | 0.2 V |
 | 124 | Temperature | °C = value − 53 | 1 °C |
 | 125 | Control demand | 0–511 → 0–100% | 100/511 ≈ 0.196% |
@@ -309,10 +319,15 @@ Public API: `A89301Driver`, `AsyncA89301Driver`, `SLAVE_ADDRESS`, and the `error
 
 Current scope is **`read(name)` / `write(name, value)` / `persist(name)`**
 (synchronous, plus the async facade).
-The context-dependent / non-linear read conversions (`MOTOR_RESISTANCE`,
-current & acceleration scaling, `SPEED_RESPONSE_TC_AND_CLOCK_SPEED_RATIO`,
-`OPERATION_STATE`, `MOSFET_CISS_COMP`) are not implemented yet; those fields
-read and write as raw.
+Fields whose datasheet conversion depends on another register
+(`RATED_CURRENT`, `MOTOR_RESISTANCE`, `ACCELERATION`, `BUS_CURRENT`,
+`Q_AXIS_CURRENT`) speak physical units too; the driver reads the dependency
+(`SENSE_RESISTOR` or `ACCELERATE_RANGE`) on demand. Fields kept raw on
+purpose: `STARTUP_CURRENT` (a rated-current multiplier whose raw 0 means
+"NA"), `SPEED_RESPONSE_TC_AND_CLOCK_SPEED_RATIO` (one raw value encodes two
+physical quantities at once), discrete selectors (e.g. `FIRST_CYCLE_SPEED`,
+`OCP_MASKING`), and fields with no published formula (`MOTOR_INDUCTANCE`,
+`PID_P`/`PID_I`, `MOSFET_CISS_COMP`, `OPERATION_STATE`).
 
 ---
 

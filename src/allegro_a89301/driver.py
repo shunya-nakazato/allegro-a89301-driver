@@ -16,7 +16,7 @@ from allegro_a89301.constants import (
     SLAVE_ADDRESS,
 )
 from allegro_a89301.errors import A89301Error, NotWritableError, UnknownFieldError
-from allegro_a89301.field import Field
+from allegro_a89301.field import DependentField, Field
 from allegro_a89301.registers import REGISTERS, WRITABLE_REGISTERS
 
 __all__ = ["A89301Driver"]
@@ -71,14 +71,20 @@ class A89301Driver:
     def read(self, name: str) -> int | float:
         """Read field ``name`` and return its physical value (raw when unscaled).
 
-        Always hits the bus (and refreshes the write cache when enabled).
+        Always hits the bus (and refreshes the write cache when enabled). A
+        field with a dependent conversion costs one extra register read.
         Raises UnknownFieldError for an unknown name.
         """
         field = self._get_field(name)
         with self._lock:
+            dependency_raw = None
+            if isinstance(field, DependentField):
+                dependency_raw = self._read_dependency_raw(field, allow_cache=False)
             register_bits = self._read_register(field.register)
             if self._use_cache:
                 self._cache[field.register] = register_bits
+        if dependency_raw is not None:
+            return field.decode(register_bits, dependency_raw)
         return field.decode(register_bits)
 
     def write(self, name: str, physical_value: int | float) -> int | float:
@@ -86,12 +92,22 @@ class A89301Driver:
 
         Takes the same units :meth:`read` returns (rounded to the nearest raw
         step) and returns the effective value written. Sibling fields are
-        preserved; the value is lost on power cycle unless persisted. Raises
-        UnknownFieldError, NotWritableError, or ValueRangeError.
+        preserved; the value is lost on power cycle unless persisted. For a
+        field with a dependent conversion, the rounding tracks the dependency's
+        value at write time. Raises UnknownFieldError, NotWritableError, or
+        ValueRangeError.
         """
         field = self._get_writable_field(name)
-        raw_value = field.encode(physical_value)
+        dependency_raw = None
+        if not isinstance(field, DependentField):
+            raw_value = field.encode(physical_value)
         with self._lock:
+            if isinstance(field, DependentField):
+                # Encoding needs the dependency's raw value, which may cost a
+                # bus read, so it happens under the lock; it also fails (and
+                # sends nothing) while the dependency is unconfigured.
+                dependency_raw = self._read_dependency_raw(field, allow_cache=True)
+                raw_value = field.encode(physical_value, dependency_raw)
             current = self._cache.get(field.register) if self._use_cache else None
             if current is None:
                 current = self._read_register(field.register)
@@ -108,6 +124,11 @@ class A89301Driver:
                 raise
             if self._use_cache:
                 self._cache[field.register] = merged
+        # The effective value must decode with the dependency raw captured
+        # before the frame went out: re-reading it here could fail after a
+        # successful write and trick the caller into a duplicate retry.
+        if dependency_raw is not None:
+            return field.decode(merged, dependency_raw)
         return field.decode(merged)
 
     def persist(self, name: str) -> None:
@@ -142,6 +163,22 @@ class A89301Driver:
             with self._lock:
                 self._require_bus()
                 self._cache.pop(field.register, None)
+
+    def _read_dependency_raw(self, field: DependentField, *, allow_cache: bool) -> int:
+        """Raw value of ``field``'s dependency; call with the lock held.
+
+        ``allow_cache`` mirrors the caller's policy: writes may reuse cached
+        register bits (like the RMW pre-read), reads always hit the bus.
+        """
+        dependency = REGISTERS[field.depends_on]
+        register_bits = None
+        if allow_cache and self._use_cache:
+            register_bits = self._cache.get(dependency.register)
+        if register_bits is None:
+            register_bits = self._read_register(dependency.register)
+            if self._use_cache:
+                self._cache[dependency.register] = register_bits
+        return dependency.extract(register_bits)
 
     def _require_bus(self) -> SMBus:
         if self._bus is None:

@@ -2,11 +2,14 @@
 
 Each field carries its raw<->physical conversions (``None`` = used raw) and
 its read ``physical_type``; the ``Field`` type itself lives in ``field.py``.
+``DependentField`` entries convert via another field's raw value, which the
+driver reads on demand.
 """
 
 from __future__ import annotations
 
-from allegro_a89301.field import Field
+from allegro_a89301.errors import ValueRangeError
+from allegro_a89301.field import DependentField, Field
 
 # Conversions raw_value -> physical_value and their inverses (see datasheet
 # Table 2). Writable fields carry both so read and write speak physical units;
@@ -20,11 +23,40 @@ _PCT_INV = lambda pct: pct * 511 / 100
 _DEADTIME = lambda raw_value: (raw_value + 1) * 40  # ns (reads as int)
 _DEADTIME_INV = lambda ns: ns / 40 - 1
 
+
+def _configured_sense_resistor(sense_resistor_raw: int) -> int:
+    # A blank device reads SENSE_RESISTOR as 0, which would silently produce
+    # infinite/zero currents and resistances; refuse the conversion instead.
+    if sense_resistor_raw == 0:
+        raise ValueRangeError(
+            "SENSE_RESISTOR register is 0; program the sense resistor value "
+            "before converting current or resistance fields"
+        )
+    return sense_resistor_raw
+
+
+# Dependent conversions (datasheet Table 2): the second argument is the raw
+# value of the field named by ``depends_on``.
+# Currents: mA = value / (Sense_resistor_register_value / 125).
+_MA = lambda raw_value, sense_raw: raw_value * 125 / _configured_sense_resistor(sense_raw)
+_MA_INV = lambda ma, sense_raw: ma * _configured_sense_resistor(sense_raw) / 125
+# Motor resistance: Ohm = value / [(Rated_voltage_reg x 4.096)
+# / (Sense_resistor_reg / 125) / (Rated_voltage_reg / 10)]. The rated-voltage
+# terms cancel, leaving Ohm = value x Sense_resistor_reg / 5120
+# (5120 = 4.096 x 125 x 10).
+_OHM = lambda raw_value, sense_raw: raw_value * _configured_sense_resistor(sense_raw) / 5120
+_OHM_INV = lambda ohm, sense_raw: ohm * 5120 / _configured_sense_resistor(sense_raw)
+# Acceleration: Hz/s = value x k, where k = 0.05 when ACCELERATE_RANGE = 0
+# and 3.2 otherwise.
+_HZ_PER_S = lambda raw_value, range_raw: raw_value * (0.05 if range_raw == 0 else 3.2)
+_HZ_PER_S_INV = lambda hz_per_s, range_raw: hz_per_s / (0.05 if range_raw == 0 else 3.2)
+
 # name -> Field; names follow the datasheet, which is also the source of the
 # per-field descriptions in the trailing comments. Each comment starts with the
 # value domain the API speaks for that field: "physical[<unit>]:" (converted
 # to/from the bracketed physical unit) or "raw:" (raw register value, no
-# conversion).
+# conversion). DependentField entries convert via another field's raw value
+# (named by depends_on), which the driver reads on demand.
 # 72..86 = config (mirror of EEPROM 8..22), 120..127 = readback, 161..163 = EEPROM ctrl.
 REGISTERS: dict[str, Field] = {
     # Register 72 (EEPROM 8)
@@ -35,10 +67,37 @@ REGISTERS: dict[str, Field] = {
     "DIRECTION": Field(72, 14, 14),  # raw: 1: A->B->C, 0: A->C->B
     "PWMIN_RANGE": Field(72, 15, 15),  # raw: 1: <=2.8 kHz, 0: >2.8 kHz
     # Register 73 (EEPROM 9)
-    "ACCELERATION": Field(73, 7, 0),  # raw: Acceleration (Hz/s) = value * k
-    "MOTOR_RESISTANCE": Field(73, 15, 8),  # raw: Motor resistance
+    # physical[Hz/s]: Acceleration (k = 0.05 or 3.2 selected by ACCELERATE_RANGE)
+    "ACCELERATION": DependentField(
+        73,
+        7,
+        0,
+        depends_on="ACCELERATE_RANGE",
+        raw_to_physical=_HZ_PER_S,
+        physical_to_raw=_HZ_PER_S_INV,
+        physical_type=float,
+    ),
+    # physical[Ohm]: Motor resistance (scaled by SENSE_RESISTOR)
+    "MOTOR_RESISTANCE": DependentField(
+        73,
+        15,
+        8,
+        depends_on="SENSE_RESISTOR",
+        raw_to_physical=_OHM,
+        physical_to_raw=_OHM_INV,
+        physical_type=float,
+    ),
     # Register 74 (EEPROM 10)
-    "RATED_CURRENT": Field(74, 10, 0),  # raw: Rated Current (mA) via sense R
+    # physical[mA]: Rated Current (scaled by SENSE_RESISTOR)
+    "RATED_CURRENT": DependentField(
+        74,
+        10,
+        0,
+        depends_on="SENSE_RESISTOR",
+        raw_to_physical=_MA,
+        physical_to_raw=_MA_INV,
+        physical_type=float,
+    ),
     "SPD_MODE": Field(74, 11, 11),  # raw: 1: analog, 0: digital (PWM/clock)
     "STARTUP_CURRENT": Field(74, 15, 13),  # raw: Startup current multiplier
     # Register 75 (EEPROM 11)
@@ -106,8 +165,27 @@ REGISTERS: dict[str, Field] = {
     "VDS_THRESHOLD_SEL": Field(86, 15, 15),  # raw: 1: 2 V, 0: 1 V
     # Readback registers (read-only)
     "MOTOR_SPEED": Field(120, 15, 0, _HZ, float),  # physical[Hz]: Motor Speed
-    "BUS_CURRENT": Field(121, 15, 0),  # raw: Bus current (mA) via sense R
-    "Q_AXIS_CURRENT": Field(122, 15, 0),  # raw: Q-axis current (mA) via sense R
+    # physical[mA]: Bus current (scaled by SENSE_RESISTOR; register is read-only,
+    # the inverse is carried for symmetry only)
+    "BUS_CURRENT": DependentField(
+        121,
+        15,
+        0,
+        depends_on="SENSE_RESISTOR",
+        raw_to_physical=_MA,
+        physical_to_raw=_MA_INV,
+        physical_type=float,
+    ),
+    # physical[mA]: Q-axis current (scaled by SENSE_RESISTOR; read-only, as above)
+    "Q_AXIS_CURRENT": DependentField(
+        122,
+        15,
+        0,
+        depends_on="SENSE_RESISTOR",
+        raw_to_physical=_MA,
+        physical_to_raw=_MA_INV,
+        physical_type=float,
+    ),
     "VBB": Field(123, 15, 0, _V, float),  # physical[V]: VBB
     # physical[degC]: chip temperature
     "TEMPERATURE": Field(124, 15, 0, lambda raw_value: raw_value - 53.0, float),
@@ -122,6 +200,15 @@ REGISTERS: dict[str, Field] = {
     "EEPROM_ADDRESS": Field(162, 4, 0),  # raw: EEPROM address to alter
     "EEPROM_DATA_IN": Field(163, 15, 0),  # raw: EEPROM data to program
 }
+
+# Table spec, checked at import: a dependency must name a defined field that is
+# itself dependency-free, so the driver resolves exactly one extra read.
+for _name, _field in REGISTERS.items():
+    if isinstance(_field, DependentField):
+        _dependency = REGISTERS.get(_field.depends_on)
+        if _dependency is None or isinstance(_dependency, DependentField):
+            raise AssertionError(f"{_name}: invalid dependency {_field.depends_on!r}")
+del _name, _field
 
 # Register-level access classification (datasheet). Kept next to the table so
 # adding a register means classifying it here; the table spec enforces that

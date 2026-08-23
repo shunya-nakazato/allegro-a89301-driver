@@ -99,6 +99,36 @@ class Field:
         return raw_value
 
 
+# kw_only so the required fields below may follow the base class's defaulted
+# ones (positionally they would be rejected at class creation).
+@dataclass(frozen=True, kw_only=True)
+class DependentField(Field):
+    """A field whose conversions need another field's raw value.
+
+    ``depends_on`` names the ``REGISTERS`` entry whose raw value parameterizes
+    the conversions (e.g. currents scale with ``SENSE_RESISTOR``). ``decode``
+    and ``encode`` therefore require that value — the base single-argument
+    call shapes do not apply to this class.
+    """
+
+    depends_on: str
+    raw_to_physical: Callable[[int, int], int | float]
+    physical_to_raw: Callable[[int | float, int], float]
+
+    def encode(self, physical_value: int | float, dependency_raw_value: int) -> int:
+        """Physical value -> raw_value, rounded to the nearest step.
+
+        Raises ValueRangeError when the result does not fit the field.
+        """
+        raw_value = round(self.physical_to_raw(physical_value, dependency_raw_value))
+        return self._check_raw_value(raw_value)
+
+    def decode(self, register_bits: int, dependency_raw_value: int) -> int | float:
+        """Decode ``register_bits`` into this field's physical value."""
+        raw_value = self.extract(register_bits)
+        return self.physical_type(self.raw_to_physical(raw_value, dependency_raw_value))
+
+
 def _check_register_bits(register_bits: int) -> None:
     if not 0 <= register_bits <= REGISTER_BITS_MASK:
         raise ValueRangeError(
